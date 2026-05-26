@@ -116,40 +116,37 @@ def carregar_vendas(f):
 
 @st.cache_data(show_spinner=False)
 def carregar_odp_vertical(f):
-    """Lê o export da aba Recebimentos e Aderência (ODP Vertical)."""
-    df = pd.read_excel(f, header=1)  # linha 2 = cabeçalhos reais
-    rename = {
-        'ID campanha':        'id_campanha',
-        'Nome':               'campanha',
-        'Categoria':          'categoria',
-        'Peças':              'pecas',
-        'Peças Convertidas':  'pecas_convertidas',
-        'Status':             'status_entrada',
-        'Data':               'data_entrada',
-        # nomes alternativos presentes no export real
-        'ID campanha\n':      'id_campanha',
-        'I':                  'id_campanha',
-    }
-    # mapeia pelos nomes reais encontrados no arquivo
-    col_map = {}
-    for col in df.columns:
-        col_s = str(col).strip()
-        if col_s in rename:
-            col_map[col] = rename[col_s]
-        # fallback por posição se o cabeçalho for diferente
-    df = df.rename(columns=col_map)
+    """Lê o export da aba Recebimentos e Aderência (ODP Vertical).
+    Estrutura real: linha 1 = títulos de seção, linha 2 = cabeçalhos reais.
+    Colunas por posição: I(9)=ID, J(10)=Nome, K(11)=Cat, L(12)=Peças,
+                         M(13)=PeçasConv, N(14)=Status, O(15)=Data
+    """
+    # tenta ler com header na linha 2 (índice 1)
+    df_raw = pd.read_excel(f, header=None)
+    if len(df_raw) < 3:
+        return pd.DataFrame()
 
-    # Se os cabeçalhos não bateram, tenta por posição (baseado no mapeamento real)
-    # Cols: A=Depara, B=DataConsumo, C=Setor, D=Mês, E=Semana, F=Rec,
-    #       G=Concat, H=Negoc, I=ID, J=Nome, K=Cat, L=Pecas, M=PecasConv, N=Status, O=Data
-    if 'id_campanha' not in df.columns and len(df.columns) >= 15:
-        df.columns = list(df.columns[:8]) + \
-            ['id_campanha','campanha','categoria','pecas','pecas_convertidas',
-             'status_entrada','data_entrada'] + list(df.columns[15:])
+    # encontra a linha de cabeçalho buscando 'ID campanha' ou 'Nome'
+    header_row = 1  # padrão: linha 2
+    for r in range(min(5, len(df_raw))):
+        row_vals = [str(v).strip() for v in df_raw.iloc[r].tolist()]
+        if any('campanha' in v.lower() or 'nome' in v.lower() for v in row_vals):
+            header_row = r
+            break
 
-    keep = ['id_campanha','campanha','categoria','pecas','pecas_convertidas',
-            'status_entrada','data_entrada']
-    df = df[[c for c in keep if c in df.columns]]
+    data_rows = df_raw.iloc[header_row + 1:].reset_index(drop=True)
+
+    # mapeia por posição (colunas fixas da aba Recebimentos e Aderência)
+    # col 0=Depara, 1=DataConsumo, 2=Setor, 3=Mês, 4=Semana, 5=Rec,
+    # 6=Concat, 7=Negoc, 8=ID, 9=Nome, 10=Cat, 11=Pecas, 12=PecasConv, 13=Status, 14=Data
+    col_map = {8: 'id_campanha', 9: 'campanha', 10: 'categoria',
+               11: 'pecas', 12: 'pecas_convertidas', 13: 'status_entrada', 14: 'data_entrada'}
+
+    df = pd.DataFrame()
+    for col_idx, nome in col_map.items():
+        if col_idx < len(data_rows.columns):
+            df[nome] = data_rows.iloc[:, col_idx]
+
     if 'id_campanha' in df.columns:
         df['id_campanha'] = pd.to_numeric(df['id_campanha'], errors='coerce')
     if 'data_entrada' in df.columns:
@@ -157,6 +154,7 @@ def carregar_odp_vertical(f):
     for c in ['pecas','pecas_convertidas']:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
     return df.dropna(subset=['id_campanha']).reset_index(drop=True)
 
 @st.cache_data(show_spinner=False)
@@ -623,6 +621,13 @@ with aba_saidas:
             cal_f = cal_f[cal_f['gerencia'].isin(sel_ger_s)]
         if cats and sel_cat_s:
             cal_f = cal_f[cal_f['categoria'].isin(sel_cat_s)]
+        # filtra horizonte relevante
+        horizonte_sai_ini = data_ref - timedelta(days=60)
+        horizonte_sai_fim = data_ref + timedelta(days=120)
+        cal_f = cal_f[
+            (cal_f['data_fim']    >= pd.Timestamp(horizonte_sai_ini)) &
+            (cal_f['data_inicio'] <= pd.Timestamp(horizonte_sai_fim))
+        ]
 
         with st.spinner("Calculando saídas..."):
             df_sai = calcular_saidas(cal_f, vendas, data_ref, params, ajustes)
@@ -679,6 +684,13 @@ with aba_blocado:
         cal_fb = filtrar_cd(cal)
         if gers_b and sel_ger_b and 'gerencia' in cal_fb.columns:
             cal_fb = cal_fb[cal_fb['gerencia'].isin(sel_ger_b)]
+        # filtra só campanhas com blocado no horizonte relevante (não mostra histórico de anos anteriores)
+        horizonte_bl_ini = data_ref - timedelta(days=30)
+        horizonte_bl_fim = data_ref + timedelta(days=120)
+        cal_fb = cal_fb[
+            (cal_fb['data_fim']    >= pd.Timestamp(horizonte_bl_ini)) &
+            (cal_fb['data_inicio'] <= pd.Timestamp(horizonte_bl_fim))
+        ]
 
         with st.spinner("Calculando blocado..."):
             df_bloc, serie_bloc = calcular_blocado(cal_fb, data_ref, params, ajustes)
@@ -724,7 +736,14 @@ with aba_rfcst:
     if not cal_ok:
         st.info("Carregue o Calendário na aba Dados.")
     else:
+        # filtra só campanhas ativas no horizonte M-2 a M+3 (evita processar histórico de 2024)
+        horizonte_ini = data_ref - timedelta(days=60)
+        horizonte_fim = data_ref + timedelta(days=120)
         cal_frf = filtrar_cd(cal)
+        cal_frf = cal_frf[
+            (cal_frf['data_fim']    >= pd.Timestamp(horizonte_ini)) &
+            (cal_frf['data_inicio'] <= pd.Timestamp(horizonte_fim))
+        ]
         df_sai_rf = calcular_saidas(cal_frf, vendas, data_ref, params, ajustes)
 
         if df_sai_rf.empty:
@@ -777,10 +796,13 @@ with aba_sim:
 
         camp_ids   = cal['id_campanha'].tolist()
         camp_nomes = cal.set_index('id_campanha')['campanha'].to_dict()
-        opcoes     = [f"{cid} — {camp_nomes.get(cid,'')}" for cid in camp_ids]
+        # usa '||' como separador para evitar problemas com travessão unicode
+        opcoes     = [f"{cid}||{camp_nomes.get(cid,'')}" for cid in camp_ids]
+        opcoes_vis = [f"{cid} — {camp_nomes.get(cid,'')}" for cid in camp_ids]
 
-        sel_str = st.selectbox("Campanha para ajustar", opcoes)
-        cid_sel = int(sel_str.split(' — ')[0])
+        sel_idx = st.selectbox("Campanha para ajustar", range(len(opcoes_vis)),
+                               format_func=lambda i: opcoes_vis[i])
+        cid_sel = camp_ids[sel_idx]
         camp_row = cal[cal['id_campanha'] == cid_sel].iloc[0]
         aj_atual = st.session_state['ajustes'].get(cid_sel, {})
 
