@@ -262,9 +262,18 @@ def get_feriados_set(params, cd='Extrema'):
         if 'jandira' in str(cd).lower():  locais += ['Jandira','SP']
         mask = df['local'].str.strip().isin(locais)
         return set(df.loc[mask,'data'].dt.date.tolist())
-    # fallback embutido
-    from params import FERIADOS
-    return FERIADOS
+    # fallback embutido (2025-2026)
+    from datetime import date as _date
+    return {
+        _date(2025,1,1), _date(2025,3,4), _date(2025,4,18), _date(2025,4,21),
+        _date(2025,5,1), _date(2025,6,19), _date(2025,8,27), _date(2025,9,7),
+        _date(2025,9,15), _date(2025,10,12), _date(2025,11,2), _date(2025,11,15),
+        _date(2025,12,24), _date(2025,12,25), _date(2025,12,26), _date(2025,12,31),
+        _date(2026,1,1), _date(2026,1,2), _date(2026,2,16), _date(2026,2,17),
+        _date(2026,4,3), _date(2026,4,17), _date(2026,5,1), _date(2026,5,22),
+        _date(2026,9,7), _date(2026,10,12), _date(2026,11,2), _date(2026,11,15),
+        _date(2026,12,25),
+    }
 
 def get_pcs_palete(cat, params):
     if params and 'pcs_palete' in params:
